@@ -1,7 +1,7 @@
 
-/* Student Project Tracker - Express API and SQLite */
+/* Student Project Tracker - API with Reliable Feedback */
 
-// 1. Find the existing HTML elements
+// 1. Existing HTML elements
 const form = document.querySelector('#project-form');
 const nameInput = document.querySelector('#name');
 const statusInput = document.querySelector('#status');
@@ -11,37 +11,38 @@ const saveButton = document.querySelector('#save-button');
 const cancelButton = document.querySelector('#cancel-button');
 const message = document.querySelector('#message');
 
-// 2. Temporary display copy of API projects
+// 2. Temporary copy of server records
 let projects = [];
-
-// Track the project currently being edited
 let editingId = null;
 
-// Track API activity
+// Request and loading state
 let busy = false;
 let loaded = false;
 
-// 3. Display messages
+// 3. Display feedback in the existing message element
 function showMessage(text) {
   message.textContent = text;
 }
 
-// 4. Enable or disable controls during requests
-function setBusy(value) {
-  busy = value;
-
-  nameInput.disabled = busy;
-  statusInput.disabled = busy;
+// 4. Update enabled/disabled controls
+function updateControls() {
+  nameInput.disabled = busy || !loaded;
+  statusInput.disabled = busy || !loaded;
   saveButton.disabled = busy || !loaded;
-  cancelButton.disabled = busy;
+  cancelButton.disabled = busy || !loaded;
 
-  // Disable project action buttons
   projectList.querySelectorAll('button').forEach(button => {
-    button.disabled = busy;
+    button.disabled = busy || !loaded;
   });
 }
 
-// 5. Send a request and check the response
+// 5. Track pending operations
+function setBusy(value) {
+  busy = value;
+  updateControls();
+}
+
+// 6. Make an API request and handle errors
 async function apiRequest(url, options = {}) {
   let response;
 
@@ -54,22 +55,28 @@ async function apiRequest(url, options = {}) {
     );
   }
 
-  // Try to read the JSON response
-  let data;
+  let data = null;
 
-  try {
-    data = await response.json();
-  } catch (error) {
-    if (!response.ok) {
+  // Read the response body if one exists
+  const responseText = await response.text();
+
+  if (responseText.trim() !== '') {
+    try {
+      data = JSON.parse(responseText);
+    } catch (error) {
+      if (response.ok) {
+        throw new Error(
+          'The server returned invalid JSON.'
+        );
+      }
+
       throw new Error(
         `API request failed (HTTP ${response.status}).`
       );
     }
-
-    throw new Error('The server returned invalid JSON.');
   }
 
-  // Handle HTTP errors from Express
+  // Check HTTP status before treating the request as success
   if (!response.ok) {
     const errorMessage =
       data &&
@@ -83,7 +90,7 @@ async function apiRequest(url, options = {}) {
   return data;
 }
 
-// 6. Reset the form to Add mode
+// 7. Restore the form to Add mode
 function resetForm() {
   editingId = null;
 
@@ -94,7 +101,7 @@ function resetForm() {
   cancelButton.hidden = true;
 }
 
-// 7. Start editing an existing project
+// 8. Enter Edit mode
 function editProject(id) {
   if (busy || !loaded) {
     return;
@@ -105,7 +112,7 @@ function editProject(id) {
   );
 
   if (!project) {
-    showMessage('Project not found. Reload the list.');
+    showMessage('Project not found. Reload the page.');
     return;
   }
 
@@ -118,14 +125,15 @@ function editProject(id) {
   saveButton.textContent = 'Save changes';
   cancelButton.hidden = false;
 
+  showMessage('Editing project. Save or Cancel your changes.');
   nameInput.focus();
 }
 
-// 8. Render the projects received from the API
+// 9. Display the current project collection
 function renderProjects() {
   projectList.replaceChildren();
 
-  // A failed load is not an empty list
+  // Only a successful load can establish an empty state
   if (emptyState) {
     emptyState.hidden = !loaded || projects.length > 0;
   }
@@ -133,7 +141,6 @@ function renderProjects() {
   projects.forEach(project => {
     const listItem = document.createElement('li');
 
-    // Display user-entered text safely
     const projectName = document.createElement('strong');
     projectName.textContent = project.name;
 
@@ -147,7 +154,7 @@ function renderProjects() {
     const editButton = document.createElement('button');
     editButton.type = 'button';
     editButton.textContent = 'Edit';
-    editButton.disabled = busy;
+    editButton.disabled = busy || !loaded;
 
     editButton.addEventListener('click', () => {
       editProject(project.id);
@@ -157,7 +164,7 @@ function renderProjects() {
     const deleteButton = document.createElement('button');
     deleteButton.type = 'button';
     deleteButton.textContent = 'Delete';
-    deleteButton.disabled = busy;
+    deleteButton.disabled = busy || !loaded;
 
     deleteButton.addEventListener('click', () => {
       deleteProject(project.id);
@@ -172,52 +179,61 @@ function renderProjects() {
 
     projectList.appendChild(listItem);
   });
+
+  updateControls();
 }
 
-// 9. Load the current collection from Express
+// 10. Validate records returned by the API
+function validateProjects(data) {
+  if (!Array.isArray(data)) {
+    throw new Error(
+      'The API did not return a project list.'
+    );
+  }
+
+  const valid = data.every(project =>
+    project !== null &&
+    typeof project === 'object' &&
+    Number.isSafeInteger(project.id) &&
+    project.id > 0 &&
+    typeof project.name === 'string' &&
+    typeof project.status === 'string' &&
+    ['Planned', 'In Progress', 'Completed'].includes(
+      project.status
+    )
+  );
+
+  if (!valid) {
+    throw new Error(
+      'The API returned invalid project records.'
+    );
+  }
+
+  const ids = data.map(project => project.id);
+
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(
+      'The API returned duplicate project IDs.'
+    );
+  }
+
+  return data;
+}
+
+// 11. Load projects from the server
 async function loadProjects() {
   showMessage('Loading projects...');
 
   try {
     const data = await apiRequest('/api/projects');
 
-    // Verify the expected API response
-    if (!Array.isArray(data)) {
-      throw new Error(
-        'The API did not return a project list.'
-      );
-    }
+    // Validate before replacing the displayed collection
+    const currentProjects = validateProjects(data);
 
-    // Validate records and server-generated IDs
-    const valid = data.every(project =>
-      project !== null &&
-      typeof project === 'object' &&
-      Number.isSafeInteger(project.id) &&
-      project.id > 0 &&
-      typeof project.name === 'string' &&
-      typeof project.status === 'string' &&
-      ['Planned', 'In Progress', 'Completed'].includes(
-        project.status
-      )
-    );
-
-    if (!valid) {
-      throw new Error(
-        'The API returned invalid project records.'
-      );
-    }
-
-    const ids = data.map(project => project.id);
-
-    if (new Set(ids).size !== ids.length) {
-      throw new Error('The API returned duplicate IDs.');
-    }
-
-    // Replace the display copy with server records
-    projects = data;
+    projects = currentProjects;
     loaded = true;
 
-    // If an edited record no longer exists, exit Edit mode
+    // Exit Edit mode if the record no longer exists
     if (
       editingId !== null &&
       !projects.some(project => project.id === editingId)
@@ -236,18 +252,26 @@ async function loadProjects() {
     return true;
 
   } catch (error) {
-    // Do not interpret a failed load as an empty list
-    loaded = false;
-    projects = [];
+    // Keep the last successfully loaded list.
+    // Never claim that a failed load means an empty database.
+    if (!loaded) {
+      projects = [];
+    }
 
     renderProjects();
 
-    showMessage('Could not load projects: ' + error.message);
+    showMessage(
+      'Could not load projects: ' + error.message +
+      (loaded
+        ? ' The displayed list may be out of date.'
+        : ' No project list is available.')
+    );
+
     return false;
   }
 }
 
-// 10. Delete a project through the API
+// 12. Delete a project
 async function deleteProject(id) {
   if (busy || !loaded) {
     return;
@@ -262,7 +286,7 @@ async function deleteProject(id) {
     return;
   }
 
-  // Ask before sending a DELETE request
+  // No request is sent if confirmation is cancelled
   const confirmed = window.confirm(
     `Are you sure you want to delete "${project.name}"?`
   );
@@ -279,34 +303,38 @@ async function deleteProject(id) {
       method: 'DELETE'
     });
 
-    // The deletion succeeded on the server
+    // The server confirmed deletion
     if (editingId === id) {
       resetForm();
     }
 
-    // Reload the authoritative API collection
+    showMessage('Deletion saved. Refreshing projects...');
+
     const refreshed = await loadProjects();
 
     if (refreshed) {
       showMessage('Project deleted successfully.');
     } else {
       showMessage(
-        'Project deleted, but the list could not be refreshed. ' +
-        'Reload the page to try again.'
+        'Project deleted on the server, but the list ' +
+        'could not be refreshed. Reload the page.'
       );
     }
 
   } catch (error) {
     showMessage('Delete failed: ' + error.message);
+
   } finally {
+    // Always restore controls
     setBusy(false);
   }
 }
 
-// 11. One form submit listener for Add and Edit
+// 13. One submit listener for Add and Edit
 form.addEventListener('submit', async event => {
   event.preventDefault();
 
+  // Prevent repeated submissions
   if (busy || !loaded) {
     return;
   }
@@ -314,7 +342,7 @@ form.addEventListener('submit', async event => {
   const name = nameInput.value.trim();
   const status = statusInput.value;
 
-  // Validate the submitted name
+  // Validate the name
   if (name === '') {
     nameInput.setCustomValidity('Enter a project name.');
     nameInput.reportValidity();
@@ -322,11 +350,8 @@ form.addEventListener('submit', async event => {
   }
 
   const isEditing = editingId !== null;
-
-  // Remember the selected ID before the request
   const selectedId = editingId;
 
-  // Send only the values accepted by the API
   const projectData = {
     name: name,
     status: status
@@ -340,7 +365,7 @@ form.addEventListener('submit', async event => {
 
   try {
     if (isEditing) {
-      // UPDATE: Use the existing server ID
+      // Update an existing server record
       await apiRequest(`/api/projects/${selectedId}`, {
         method: 'PUT',
         headers: {
@@ -350,7 +375,7 @@ form.addEventListener('submit', async event => {
       });
 
     } else {
-      // CREATE: The server generates the project ID
+      // Create a new server record
       await apiRequest('/api/projects', {
         method: 'POST',
         headers: {
@@ -360,10 +385,12 @@ form.addEventListener('submit', async event => {
       });
     }
 
-    // Mutation succeeded; return to Add mode
+    // The mutation succeeded.
+    // Reset only after the server confirms success.
     resetForm();
 
-    // Reload the current collection from SQLite
+    showMessage('Changes saved. Refreshing projects...');
+
     const refreshed = await loadProjects();
 
     if (refreshed) {
@@ -373,7 +400,7 @@ form.addEventListener('submit', async event => {
           : 'Project added successfully.'
       );
 
-      nameInput.focus();
+      // Focus after controls are restored below
     } else {
       showMessage(
         'Project saved on the server, but the list ' +
@@ -382,17 +409,20 @@ form.addEventListener('submit', async event => {
     }
 
   } catch (error) {
-    // Do not reset unsaved input after a failed mutation
+    // Preserve input and Edit mode after a failed mutation
     showMessage(
       (isEditing ? 'Update failed: ' : 'Add failed: ') +
-      error.message
+      error.message +
+      ' Your form values have been preserved.'
     );
+
   } finally {
+    // Restore controls after success or failure
     setBusy(false);
   }
 });
 
-// 12. Cancel editing without sending an API request
+// 14. Cancel editing without contacting the API
 cancelButton.addEventListener('click', () => {
   if (busy) {
     return;
@@ -403,21 +433,22 @@ cancelButton.addEventListener('click', () => {
   nameInput.focus();
 });
 
-// 13. Clear custom validation while typing
+// 15. Clear validation errors while typing
 nameInput.addEventListener('input', () => {
   nameInput.setCustomValidity('');
 });
 
-// 14. Initialize the application
+// 16. Initialize the application
 resetForm();
 
-// Prevent mutations until the first API load succeeds
-loaded = false;
-setBusy(true);
-
 async function initialize() {
-  await loadProjects();
-  setBusy(false);
+  setBusy(true);
+
+  try {
+    await loadProjects();
+  } finally {
+    setBusy(false);
+  }
 }
 
 initialize();
